@@ -163,7 +163,6 @@ def create_video_from_segments(segments, tmpl1, tmpl2, closing, output, progress
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", seg_with_audio
         ], f"add audio {i}")
         segment_videos.append(seg_with_audio)
-
     if progress_cb: progress_cb(0.7, "Joining segments...")
     concat_list = temp / "concat.txt"
     with open(concat_list, "w") as f:
@@ -171,16 +170,23 @@ def create_video_from_segments(segments, tmpl1, tmpl2, closing, output, progress
     main_video = str(temp / "main.mp4")
     run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c:v", "libx264", "-preset", "fast", "-crf", "23", main_video], "concat")
 
-    if progress_cb: progress_cb(0.85, "Adding closing...")
-    closing_scaled = str(temp / "closing_scaled.mp4")
-    run_cmd(["ffmpeg", "-y", "-i", closing, "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2", "-c:v", "libx264", "-c:a", "aac", closing_scaled], "closing")
+    if progress_cb: progress_cb(0.85, "Adding closing with original audio...")
 
-    if progress_cb: progress_cb(0.9, "Final assembly...")
-    final_list = temp / "final.txt"
-    with open(final_list, "w") as f:
-        f.write(f"file '{main_video}'\n")
-        f.write(f"file '{closing_scaled}'\n")
-    run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(final_list), "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-movflags", "+faststart", output], "final")
+    # FINAL FIX: Keep closing video's original audio!
+    run_cmd([
+        "ffmpeg", "-y",
+        "-i", main_video,
+        "-i", closing,
+        "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-preset", "fast",
+        "-crf", "23",
+        "-movflags", "+faststart",
+        output
+    ], "final with closing audio preserved")
+
     if progress_cb: progress_cb(1.0, "Done!")
 
 # ============================================================================

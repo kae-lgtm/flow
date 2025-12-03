@@ -337,21 +337,34 @@ Article:
 """
 
 # Edge TTS Voice Options (FREE, no API key needed!)
-# Full list: https://github.com/rany2/edge-tts
-VOICE_OPTIONS = {
-    "Guy (US)": "en-US-GuyNeural",           # Deep male voice - great for Speaker 1
-    "Davis (US)": "en-US-DavisNeural",       # Warm male voice - great for Speaker 2
-    "Tony (US)": "en-US-TonyNeural",         # Casual male voice
-    "Jason (US)": "en-US-JasonNeural",       # Professional male
-    "Christopher (US)": "en-US-ChristopherNeural",  # News anchor style
-    "Eric (US)": "en-US-EricNeural",         # Friendly male
-    "Ryan (UK)": "en-GB-RyanNeural",         # British male
-    "William (AU)": "en-AU-WilliamNeural",   # Australian male
-    "Jenny (US)": "en-US-JennyNeural",       # Friendly female
-    "Aria (US)": "en-US-AriaNeural",         # Professional female
+EDGE_VOICES = {
+    "Guy (US)": "en-US-GuyNeural",
+    "Davis (US)": "en-US-DavisNeural",
+    "Tony (US)": "en-US-TonyNeural",
+    "Jason (US)": "en-US-JasonNeural",
+    "Christopher (US)": "en-US-ChristopherNeural",
+    "Eric (US)": "en-US-EricNeural",
+    "Ryan (UK)": "en-GB-RyanNeural",
+    "William (AU)": "en-AU-WilliamNeural",
+    "Jenny (US)": "en-US-JennyNeural",
+    "Aria (US)": "en-US-AriaNeural",
+}
+
+# Gemini TTS Voice Options (uses API, but great quality!)
+GEMINI_VOICES = {
+    "Enceladus": "Enceladus",
+    "Puck": "Puck", 
+    "Charon": "Charon",
+    "Kore": "Kore",
+    "Fenrir": "Fenrir",
+    "Aoede": "Aoede",
+    "Leda": "Leda",
+    "Orus": "Orus",
+    "Zephyr": "Zephyr"
 }
 
 SKIT_MODEL = "gemini-2.0-flash"
+TTS_MODEL = "gemini-2.5-flash-preview-tts"  # Flash is cheaper than Pro
 
 LOGO_URL = "https://news.shib.io/wp-content/uploads/2025/12/Untitled-design-1.png"
 
@@ -427,25 +440,75 @@ def generate_audio_gtts(text, output_path):
     tts = gTTS(text=text, lang='en', slow=False)
     tts.save(output_path)
 
-def generate_audio(text, voice, output_path):
-    """Generate TTS - tries Edge TTS first, falls back to gTTS."""
+def generate_audio_gemini(text, voice, api_key, output_path):
+    """Generate TTS using Gemini API (best quality)."""
+    client = genai.Client(api_key=api_key)
+    
+    response = client.models.generate_content(
+        model=TTS_MODEL,
+        contents=f'Say this in a warm, engaging podcast host tone: "{text}"',
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=voice
+                    )
+                )
+            )
+        )
+    )
+    
+    audio_part = response.candidates[0].content.parts[0]
+    audio_data = audio_part.inline_data.data
+    
+    if isinstance(audio_data, bytes):
+        pcm_data = audio_data
+    elif isinstance(audio_data, str):
+        missing_padding = len(audio_data) % 4
+        if missing_padding:
+            audio_data += '=' * (4 - missing_padding)
+        pcm_data = base64.b64decode(audio_data)
+    else:
+        raise Exception(f"Unexpected audio data type: {type(audio_data)}")
+    
+    # Save as WAV
+    with wave.open(output_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(pcm_data)
+    
+    return output_path
+
+def generate_audio(text, voice, output_path, tts_engine="edge", api_key=None):
+    """Generate TTS - supports Edge TTS (free) or Gemini TTS (API)."""
     try:
-        # Try Edge TTS first (better quality voices)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(generate_audio_edge(text, voice, output_path))
-        finally:
-            loop.close()
-        
-        # Verify file was created and has content
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-            return output_path
+        if tts_engine == "gemini":
+            if not api_key:
+                raise Exception("API key required for Gemini TTS")
+            # Gemini outputs WAV
+            wav_path = output_path.replace('.mp3', '.wav')
+            generate_audio_gemini(text, voice, api_key, wav_path)
+            return wav_path
         else:
-            raise Exception("Edge TTS produced empty file")
+            # Try Edge TTS first (outputs MP3)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(generate_audio_edge(text, voice, output_path))
+            finally:
+                loop.close()
             
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return output_path
+            else:
+                raise Exception("Edge TTS produced empty file")
+                
     except Exception as e:
-        # Fallback to gTTS
+        if tts_engine == "gemini":
+            raise Exception(f"Gemini TTS failed: {str(e)}")
+        # Fallback to gTTS for Edge TTS failures
         try:
             generate_audio_gtts(text, output_path)
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
@@ -624,10 +687,35 @@ def main():
         
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         
-        # Voices
+        # TTS Engine Selection
+        st.markdown("### 🔊 Voice Engine")
+        tts_engine = st.radio(
+            "Choose TTS engine",
+            ["edge", "gemini"],
+            format_func=lambda x: "🆓 Edge TTS (Free)" if x == "edge" else "⭐ Gemini TTS (Best Quality)",
+            index=1,  # Default to Gemini
+            help="Edge TTS is free but lower quality. Gemini TTS uses API but sounds amazing!"
+        )
+        
+        if tts_engine == "gemini":
+            st.caption("Uses API for voice generation")
+        else:
+            st.caption("100% free, no API needed for voices")
+        
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+        
+        # Voices - show different options based on engine
         st.markdown("### 🎙️ Voices")
-        voice1 = st.selectbox("Speaker 1", list(VOICE_OPTIONS.keys()), index=0)
-        voice2 = st.selectbox("Speaker 2", list(VOICE_OPTIONS.keys()), index=1)
+        
+        if tts_engine == "gemini":
+            voice_options = GEMINI_VOICES
+            default_v1, default_v2 = 0, 1  # Enceladus, Puck
+        else:
+            voice_options = EDGE_VOICES
+            default_v1, default_v2 = 0, 1  # Guy, Davis
+        
+        voice1 = st.selectbox("Speaker 1", list(voice_options.keys()), index=default_v1)
+        voice2 = st.selectbox("Speaker 2", list(voice_options.keys()), index=default_v2)
         
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         
@@ -712,9 +800,14 @@ Speaker 2: "And so on..."''',
                 errors.append("Paste your skit in the right panel")
         else:
             if not api_key:
-                errors.append("API key required (or use 'Skip AI generation' option)")
+                errors.append("API key required for skit generation (or use 'Skip AI generation' option)")
             if not article.strip():
                 errors.append("Article required")
+        
+        # Check API key for Gemini TTS
+        if tts_engine == "gemini" and not api_key:
+            errors.append("API key required for Gemini TTS (or switch to Edge TTS)")
+        
         if not ready:
             errors.append("All templates required")
         
@@ -763,22 +856,33 @@ Speaker 2: "And so on..."''',
                 
                 progress.progress(0.2)
                 
-                # 3. Generate TTS (FREE with Edge TTS!)
+                # 3. Generate TTS
                 segments = []
+                
+                # Get the right voice mapping based on engine
+                if tts_engine == "gemini":
+                    voice_map = GEMINI_VOICES
+                else:
+                    voice_map = EDGE_VOICES
+                
                 for i, (spk, txt) in enumerate(lines):
                     pct = 0.2 + (i / len(lines)) * 0.25
                     progress.progress(pct)
-                    status.info(f"🎙️ Generating voice {i+1}/{len(lines)}...")
                     
-                    voice = VOICE_OPTIONS[voice1] if "1" in spk else VOICE_OPTIONS[voice2]
+                    engine_label = "Gemini" if tts_engine == "gemini" else "Edge"
+                    status.info(f"🎙️ Generating voice {i+1}/{len(lines)} ({engine_label})...")
+                    
+                    voice = voice_map[voice1] if "1" in spk else voice_map[voice2]
                     audio = str(tmp / f"a{i}.mp3")
-                    generate_audio(txt, voice, audio)
+                    
+                    # Generate audio with selected engine
+                    audio_path = generate_audio(txt, voice, audio, tts_engine, api_key)
                     
                     segments.append({
                         "speaker": spk,
                         "text": txt,
-                        "audio": audio,
-                        "duration": get_duration(audio)
+                        "audio": audio_path,
+                        "duration": get_duration(audio_path)
                     })
                 
                 # 4. Create video
@@ -824,12 +928,23 @@ Speaker 2: "And so on..."''',
                         use_container_width=True
                     )
                 
+                # Calculate API usage
+                api_calls = 0
+                if not skip_skit:
+                    api_calls += 1  # Skit generation
+                if tts_engine == "gemini":
+                    api_calls += len(lines)  # TTS calls
+                
+                cost_label = "100% FREE" if api_calls == 0 else f"{api_calls} API call{'s' if api_calls > 1 else ''}"
+                cost_color = "#10b981" if api_calls == 0 else "#f7931a"
+                
                 st.markdown(f"""
                 <div class="info-card">
                     <strong>📊 Video Stats</strong><br>
                     Resolution: 1920×1080 • Lines: {len(lines)} • Time: {elapsed:.0f}s<br>
-                    <span style="color: {'#10b981' if skip_skit else '#f7931a'}">
-                        {'✓ 100% FREE (no API used)' if skip_skit else '• 1 API call (skit generation)'}
+                    TTS Engine: {'⭐ Gemini' if tts_engine == 'gemini' else '🆓 Edge'}<br>
+                    <span style="color: {cost_color}">
+                        ✓ {cost_label}
                     </span>
                 </div>
                 """, unsafe_allow_html=True)

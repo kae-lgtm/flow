@@ -445,10 +445,10 @@ def get_duration(path):
     return float(result.stdout.strip())
 
 def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
-    """Assemble final video with FFmpeg - NO CAPTIONS."""
+    """Assemble final video with FFmpeg - NO CAPTIONS, WITH CLOSING AUDIO."""
     temp = Path(output).parent
     
-    # 1. Merge all audio
+    # 1. Merge all skit audio
     if progress_cb: progress_cb(0.5, "Merging audio...")
     
     audio_list = temp / "audio.txt"
@@ -506,7 +506,21 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
         main_video
     ], "concat videos")
     
-    # 4. Add closing template
+    # 4. Add skit audio to main video
+    if progress_cb: progress_cb(0.8, "Adding skit audio...")
+    
+    main_with_audio = str(temp / "main_with_audio.mp4")
+    run_cmd([
+        "ffmpeg", "-y",
+        "-i", main_video,
+        "-i", merged,
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k",
+        "-shortest",
+        main_with_audio
+    ], "add skit audio")
+    
+    # 5. Scale closing template (KEEP ITS AUDIO)
     if progress_cb: progress_cb(0.85, "Adding closing...")
     
     closing_scaled = str(temp / "closing_scaled.mp4")
@@ -514,52 +528,27 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
         "ffmpeg", "-y", "-i", closing,
         "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-        "-an",
+        "-c:a", "aac", "-b:a", "192k",
         closing_scaled
     ], "scale closing")
     
-    final_video_list = temp / "final_videos.txt"
-    with open(final_video_list, "w") as f:
-        f.write(f"file '{main_video}'\n")
-        f.write(f"file '{closing_scaled}'\n")
+    # 6. Concat main (with skit audio) + closing (with its own audio)
+    if progress_cb: progress_cb(0.9, "Final assembly...")
     
-    video_no_audio = str(temp / "video_no_audio.mp4")
-    run_cmd([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", str(final_video_list),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        video_no_audio
-    ], "concat final")
-    
-    # 5. Add audio
-    if progress_cb: progress_cb(0.9, "Adding audio...")
-    
-    close_dur = get_duration(closing)
-    silent = str(temp / "silent.wav")
-    run_cmd(["ffmpeg", "-y", "-f", "lavfi", 
-             "-i", f"anullsrc=r=24000:cl=mono:d={close_dur}",
-             "-c:a", "pcm_s16le", silent], "silent")
-    
-    final_audio_list = temp / "final_audio.txt"
-    with open(final_audio_list, "w") as f:
-        f.write(f"file '{merged}'\n")
-        f.write(f"file '{silent}'\n")
-    
-    final_audio = str(temp / "final_audio.wav")
-    run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", 
-             "-i", str(final_audio_list),
-             "-c:a", "pcm_s16le", final_audio], "concat audio")
-    
-    # 6. Final merge
+    # Use ffmpeg concat filter for videos with different audio
     run_cmd([
         "ffmpeg", "-y",
-        "-i", video_no_audio,
-        "-i", final_audio,
-        "-c:v", "copy",
+        "-i", main_with_audio,
+        "-i", closing_scaled,
+        "-filter_complex", 
+        "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]",
+        "-map", "[outv]",
+        "-map", "[outa]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-c:a", "aac", "-b:a", "192k",
-        "-shortest",
+        "-movflags", "+faststart",
         output
-    ], "final merge")
+    ], "final concat")
     
     if progress_cb: progress_cb(1.0, "Done!")
 

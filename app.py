@@ -455,38 +455,80 @@ def main():
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
     
     # ========== AUDIO MODE (FREE) ==========
-    if mode == "audio":
-        st.markdown('<span class="badge-free">💰 $0 API COST</span>', unsafe_allow_html=True)
-        st.markdown("#### 🎧 Audio Splitter Mode")
-        st.caption("Upload complete audio from AI Studio → Auto-split by speaker → Perfect video!")
+        mode = st.radio(
+        "Mode",
+        ["audio", "skit", "article", "lines"],
+        format_func=lambda x: {
+            "audio": "Upload full audio + split",
+            "skit": "Paste skit → generate audio",
+            "article": "Article → full auto",
+            "lines": "Upload each line separately (BEST QUALITY)"
+        }[x],
+        horizontal=True
+    )
+            # ========== NEW PERFECT MODE: UPLOAD EACH LINE SEPARATELY ==========
+    elif mode == "lines":
+        st.markdown('<span class="badge-free">PERFECT SYNC · 100% FREE · NO API</span>', unsafe_allow_html=True)
+        st.markdown("#### Upload Each Speaker Line Separately")
+        st.caption("Best quality: Upload one audio file per line → Pixel-perfect timing")
+
+        lines = parse_skit(skit_text) if 'skit_text' in locals() and skit_text else []
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Step 1: Upload Audio**")
-            audio_file = st.file_uploader("Complete audio (both speakers)", type=["wav", "mp3"])
-            
-            if audio_file:
-                st.audio(audio_file)
-                st.markdown('<span class="badge-success">✓ Audio loaded</span>', unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown("**Step 2: Paste Skit**")
-            st.caption("So we know speaker order")
-            skit_text = st.text_area(
-                "Skit",
-                height=200,
-                placeholder='Speaker 1: "..."\nSpeaker 2: "..."\nSpeaker 1: "..."',
-                label_visibility="collapsed"
-            )
-            
+        if not lines:
+            st.warning("First paste your skit below")
+            skit_text = st.text_area("Paste skit first", height=200)
             if skit_text:
                 lines = parse_skit(skit_text)
-                if lines:
-                    st.caption(f"✓ {len(lines)} speaker turns")
-        
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-        
+                st.success(f"Found {len(lines)} lines")
+        else:
+            st.success(f"Ready for {len(lines)} audio files")
+
+        if lines:
+            uploaded_audios = []
+            for i, (speaker, text) in enumerate(lines):
+                col1, col2 = st.columns([3,1])
+                with col1:
+                    st.write(f"**{speaker}:** {text[:60]}{'...' if len(text)>60 else ''}")
+                with col2:
+                    audio = st.file_uploader(f"Line {i+1}", type=["wav","mp3","m4a"], key=f"audio_{i}")
+                    if audio:
+                        uploaded_audios.append(audio)
+                        st.success("Loaded")
+
+            if len(uploaded_audios) == len(lines) and templates_ready:
+                if st.button("CREATE PERFECT VIDEO", use_container_width=True):
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        tmp = Path(tmpdir)
+                        progress = st.progress(0)
+                        status = st.empty()
+
+                        segments = []
+                        for i, audio_file in enumerate(uploaded_audios):
+                            audio_path = str(tmp / f"line_{i}.wav")
+                            with open(audio_path, "wb") as f:
+                                f.write(audio_file.read())
+                            
+                            duration = get_duration(audio_path)
+                            segments.append({
+                                "speaker": lines[i][0],
+                                "text": lines[i][1],
+                                "audio": audio_path,
+                                "duration": duration
+                            })
+                            progress.progress((i+1)/len(uploaded_audios) * 0.8)
+
+                        # Templates
+                        t1 = str(tmp / "t1.mp4"); open(t1, "wb").write(tmpl1.read())
+                        t2 = str(tmp / "t2.mp4"); open(t2, "wb").write(tmpl2.read())
+                        tc = str(tmp / "tc.mp4"); open(tc, "wb").write(tmpl_c.read())
+
+                        output = str(tmp / "final.mp4")
+                        create_video_from_segments(segments, t1, t2, tc, output,
+                            lambda p,m: (progress.progress(p), status.info(m)))
+
+                        st.video(open(output, "rb").read())
+                        st.download_button("DOWNLOAD PERFECT VIDEO", open(output, "rb").read(),
+                                         f"perfect_pawdcast_{datetime.now().strftime('%H%M')}.mp4", "video/mp4")
         # Timestamp input option
         st.markdown("**Step 3: Set Split Points**")
         

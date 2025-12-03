@@ -24,6 +24,7 @@ import time
 import base64
 import asyncio
 import edge_tts
+from gtts import gTTS
 
 # ============================================================================
 # PAGE CONFIG
@@ -416,20 +417,43 @@ def generate_skit(article, api_key):
     except Exception as e:
         raise Exception(f"Skit generation failed: {str(e)}")
 
-async def generate_audio_async(text, voice, output_path):
-    """Generate TTS audio using Edge TTS (FREE, unlimited)."""
+async def generate_audio_edge(text, voice, output_path):
+    """Generate TTS audio using Edge TTS."""
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(output_path)
-    return output_path
+
+def generate_audio_gtts(text, output_path):
+    """Fallback TTS using Google TTS (simpler but still free)."""
+    tts = gTTS(text=text, lang='en', slow=False)
+    tts.save(output_path)
 
 def generate_audio(text, voice, output_path):
-    """Wrapper to run async Edge TTS."""
+    """Generate TTS - tries Edge TTS first, falls back to gTTS."""
     try:
-        # Run the async function
-        asyncio.run(generate_audio_async(text, voice, output_path))
-        return output_path
+        # Try Edge TTS first (better quality voices)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(generate_audio_edge(text, voice, output_path))
+        finally:
+            loop.close()
+        
+        # Verify file was created and has content
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return output_path
+        else:
+            raise Exception("Edge TTS produced empty file")
+            
     except Exception as e:
-        raise Exception(f"Audio generation failed: {str(e)}")
+        # Fallback to gTTS
+        try:
+            generate_audio_gtts(text, output_path)
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return output_path
+            else:
+                raise Exception("gTTS produced empty file")
+        except Exception as e2:
+            raise Exception(f"Audio generation failed. Edge TTS: {str(e)}, gTTS: {str(e2)}")
 
 def get_duration(path):
     """Get media file duration."""

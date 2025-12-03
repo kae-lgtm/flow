@@ -1,17 +1,13 @@
 """
-🐕 Pawdcast Skit Factory - Fully Automated Edition
-One-click article to video conversion, just like MakeReels.ai
+🐕 Pawdcast Skit Factory
+Fully automated article-to-video conversion for The Shib Daily
 
-User Flow:
-1. Paste article text
-2. Click "Create Pawdcast"
-3. Download ready-to-publish 16:9 video
-
-Tech Stack:
-- Streamlit Cloud (free hosting with server-side FFmpeg)
-- Gemini 3 Pro Preview (skit generation)
-- Gemini 2.5 Flash Preview TTS (multi-speaker audio)
-- FFmpeg (fast server-side video rendering)
+Features:
+- Paste article → Get video
+- AI-powered skit generation (Gemini)
+- Natural TTS voices
+- Auto speaker switching
+- 16:9 output (1920x1080)
 """
 
 import streamlit as st
@@ -26,11 +22,9 @@ from pathlib import Path
 from datetime import datetime
 import time
 import base64
-import zipfile
-import io
 
 # ============================================================================
-# PAGE CONFIG & THEME
+# PAGE CONFIG
 # ============================================================================
 
 st.set_page_config(
@@ -40,87 +34,253 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ============================================================================
+# GLASSMORPHISM THEME - White/Gray with Glass Effects
+# ============================================================================
+
 st.markdown("""
 <style>
-/* Dark Shib theme */
+/* Import Google Font */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* Main background - light gradient */
 .stApp {
-    background: linear-gradient(135deg, #0a0a14 0%, #12121f 50%, #0f1018 100%);
+    background: linear-gradient(135deg, #f5f7fa 0%, #e4e8ec 50%, #d1d5db 100%);
+    font-family: 'Inter', sans-serif;
 }
 
-/* Title styling */
+/* Hide default Streamlit elements */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+
+/* Glass card effect */
+.glass-card {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.8);
+    border-radius: 24px;
+    padding: 2rem;
+    box-shadow: 
+        0 8px 32px rgba(0, 0, 0, 0.08),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+/* Header with logo */
+.header-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.logo-img {
+    width: 60px;
+    height: 60px;
+    border-radius: 16px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+
 .main-title {
-    font-size: 2.6rem;
-    font-weight: 800;
-    text-align: center;
-    background: linear-gradient(90deg, #f7931a 0%, #ff6b35 50%, #f7931a 100%);
+    font-size: 2.2rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #f7931a 0%, #ff6b35 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
-    margin-bottom: 0.2rem;
+    margin: 0;
 }
 
 .subtitle {
-    color: #888;
+    color: #64748b;
     text-align: center;
     font-size: 1rem;
-    margin-bottom: 1.5rem;
+    font-weight: 400;
+    margin-top: 0.25rem;
+}
+
+/* Sidebar styling */
+section[data-testid="stSidebar"] {
+    background: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+section[data-testid="stSidebar"] .stMarkdown {
+    color: #374151;
+}
+
+/* Input fields */
+.stTextArea textarea {
+    background: rgba(255, 255, 255, 0.9) !important;
+    border: 1px solid rgba(0, 0, 0, 0.1) !important;
+    border-radius: 16px !important;
+    font-family: 'Inter', sans-serif !important;
+    font-size: 0.95rem !important;
+    color: #1f2937 !important;
+    padding: 1rem !important;
+}
+
+.stTextArea textarea:focus {
+    border-color: #f7931a !important;
+    box-shadow: 0 0 0 3px rgba(247, 147, 26, 0.1) !important;
+}
+
+.stTextArea textarea::placeholder {
+    color: #9ca3af !important;
+}
+
+/* File uploader */
+.stFileUploader {
+    background: rgba(255, 255, 255, 0.5);
+    border-radius: 12px;
+    padding: 0.5rem;
+}
+
+/* Select boxes */
+.stSelectbox > div > div {
+    background: rgba(255, 255, 255, 0.9) !important;
+    border: 1px solid rgba(0, 0, 0, 0.1) !important;
+    border-radius: 12px !important;
 }
 
 /* Big orange CTA button */
 .stButton > button {
-    background: linear-gradient(90deg, #f7931a, #ff6b35) !important;
+    background: linear-gradient(135deg, #f7931a 0%, #ff6b35 100%) !important;
     color: white !important;
-    font-size: 1.3rem !important;
-    font-weight: bold !important;
-    padding: 0.8rem 2rem !important;
+    font-size: 1.2rem !important;
+    font-weight: 600 !important;
+    font-family: 'Inter', sans-serif !important;
+    padding: 1rem 2.5rem !important;
     border: none !important;
-    border-radius: 12px !important;
-    box-shadow: 0 4px 15px rgba(247, 147, 26, 0.4) !important;
-    transition: all 0.2s ease !important;
+    border-radius: 16px !important;
+    box-shadow: 0 8px 24px rgba(247, 147, 26, 0.35) !important;
+    transition: all 0.3s ease !important;
+    text-transform: none !important;
 }
 
 .stButton > button:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 6px 20px rgba(247, 147, 26, 0.5) !important;
+    transform: translateY(-3px) !important;
+    box-shadow: 0 12px 32px rgba(247, 147, 26, 0.45) !important;
 }
 
-/* Status badges */
-.badge-success {
-    display: inline-block;
-    background: rgba(34, 197, 94, 0.2);
-    border: 1px solid #22c55e;
-    color: #22c55e;
-    padding: 0.3rem 0.7rem;
-    border-radius: 20px;
-    font-size: 0.85rem;
-}
-
-.badge-warning {
-    display: inline-block;
-    background: rgba(251, 191, 36, 0.2);
-    border: 1px solid #fbbf24;
-    color: #fbbf24;
-    padding: 0.3rem 0.7rem;
-    border-radius: 20px;
-    font-size: 0.85rem;
-}
-
-/* Info cards */
-.info-card {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 12px;
-    padding: 1rem;
-    margin: 0.5rem 0;
-}
-
-/* Sidebar */
-section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0f0f1a 0%, #1a1a2e 100%);
+.stButton > button:active {
+    transform: translateY(-1px) !important;
 }
 
 /* Download buttons */
 .stDownloadButton > button {
-    background: linear-gradient(90deg, #22c55e, #16a34a) !important;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+    color: white !important;
+    font-weight: 600 !important;
+    border: none !important;
+    border-radius: 12px !important;
+    box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3) !important;
+}
+
+.stDownloadButton > button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4) !important;
+}
+
+/* Progress bar */
+.stProgress > div > div {
+    background: linear-gradient(90deg, #f7931a, #ff6b35) !important;
+    border-radius: 10px;
+}
+
+/* Status badges */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.9rem;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.badge-success {
+    background: rgba(16, 185, 129, 0.15);
+    color: #059669;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #d97706;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.badge-info {
+    background: rgba(59, 130, 246, 0.15);
+    color: #2563eb;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+/* Section headers */
+.section-header {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* Info cards */
+.info-card {
+    background: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.8);
+    border-radius: 16px;
+    padding: 1.25rem;
+    margin: 1rem 0;
+}
+
+/* Video container */
+.video-container {
+    background: rgba(0, 0, 0, 0.03);
+    border-radius: 20px;
+    padding: 1rem;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+/* Footer */
+.footer {
+    text-align: center;
+    padding: 2rem 0 1rem 0;
+    color: #9ca3af;
+    font-size: 0.85rem;
+}
+
+.footer a {
+    color: #f7931a;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+/* Divider */
+.divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0,0,0,0.1), transparent);
+    margin: 1.5rem 0;
+}
+
+/* Expander styling */
+.streamlit-expanderHeader {
+    background: rgba(255, 255, 255, 0.5) !important;
+    border-radius: 12px !important;
+}
+
+/* Text input */
+.stTextInput input {
+    background: rgba(255, 255, 255, 0.9) !important;
+    border: 1px solid rgba(0, 0, 0, 0.1) !important;
+    border-radius: 12px !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -152,7 +312,6 @@ Speaker 1: "..."
 Article:
 """
 
-# Voice options
 VOICE_OPTIONS = {
     "Enceladus": "Enceladus",
     "Puck": "Puck",
@@ -165,9 +324,10 @@ VOICE_OPTIONS = {
     "Zephyr": "Zephyr"
 }
 
-# Models - using stable versions
-SKIT_MODEL = "gemini-2.0-flash"  # Stable and fast
+SKIT_MODEL = "gemini-2.0-flash"
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
+
+LOGO_URL = "https://news.shib.io/wp-content/uploads/2025/12/Untitled-design-1.png"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -193,12 +353,10 @@ def parse_skit(text):
     if not text:
         return []
     
-    # Try standard quote format
     pattern = r'Speaker\s*(\d+)\s*:\s*["""]([^"""]+)["""]'
     matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
     
     if not matches:
-        # Try alternate format without quotes
         pattern = r'Speaker\s*(\d+)\s*:\s*(.+?)(?=Speaker\s*\d+:|$)'
         matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
         matches = [(num, line.strip().strip('"').strip('"').strip('"').strip("'")) 
@@ -219,11 +377,9 @@ def generate_skit(article, api_key):
             )
         )
         
-        # Check if response has text
         if response and response.text:
             return response.text
         elif response and response.candidates:
-            # Try to get text from candidates
             for candidate in response.candidates:
                 if candidate.content and candidate.content.parts:
                     for part in candidate.content.parts:
@@ -255,15 +411,12 @@ def generate_audio(text, voice, api_key, output_path):
             )
         )
         
-        # Get the audio data from response
         audio_part = response.candidates[0].content.parts[0]
         audio_data = audio_part.inline_data.data
         
-        # Handle if data is already bytes or needs decoding
         if isinstance(audio_data, bytes):
             pcm_data = audio_data
         elif isinstance(audio_data, str):
-            # Fix padding if needed
             missing_padding = len(audio_data) % 4
             if missing_padding:
                 audio_data += '=' * (4 - missing_padding)
@@ -271,7 +424,6 @@ def generate_audio(text, voice, api_key, output_path):
         else:
             raise Exception(f"Unexpected audio data type: {type(audio_data)}")
         
-        # Save as WAV (24kHz, 16-bit, mono)
         with wave.open(output_path, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
@@ -292,27 +444,8 @@ def get_duration(path):
     ], "duration")
     return float(result.stdout.strip())
 
-def escape_ffmpeg(text):
-    """Escape text for FFmpeg drawtext."""
-    for char in ["\\", "'", ":", ",", "[", "]", ";", "="]:
-        text = text.replace(char, f"\\{char}")
-    return text
-
-def wrap_text(text, max_len=40):
-    """Word wrap for captions."""
-    words = text.split()
-    lines, line = [], []
-    for word in words:
-        line.append(word)
-        if len(" ".join(line)) > max_len:
-            lines.append(" ".join(line[:-1]))
-            line = [word]
-    if line:
-        lines.append(" ".join(line))
-    return "\\n".join(lines)
-
 def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
-    """Assemble final video with FFmpeg."""
+    """Assemble final video with FFmpeg - NO CAPTIONS."""
     temp = Path(output).parent
     
     # 1. Merge all audio
@@ -327,46 +460,21 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
     run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(audio_list), 
              "-c:a", "pcm_s16le", merged], "merge audio")
     
-    total_dur = get_duration(merged)
+    # 2. Create individual video segments for each speaker line (NO CAPTIONS)
+    if progress_cb: progress_cb(0.6, "Building video segments...")
     
-    # Calculate timestamps
-    t = 0
-    for s in segments:
-        s['start'], s['end'] = t, t + s['duration']
-        t = s['end']
-    
-    # 2. Build filter graph - using simpler approach
-    if progress_cb: progress_cb(0.6, "Building video...")
-    
-    # Create individual video segments for each speaker line
     segment_videos = []
     
     for i, s in enumerate(segments):
         seg_out = str(temp / f"seg_{i}.mp4")
         template = tmpl1 if "1" in s['speaker'] else tmpl2
         duration = s['duration']
-        caption = s['text'].replace("'", "'\\''").replace(":", "\\:")
         
-        # Word wrap caption
-        words = caption.split()
-        lines = []
-        line = []
-        for word in words:
-            line.append(word)
-            if len(" ".join(line)) > 40:
-                lines.append(" ".join(line[:-1]))
-                line = [word]
-        if line:
-            lines.append(" ".join(line))
-        caption_wrapped = "\\n".join(lines)
-        
-        # Create segment with caption
+        # Simple filter - just scale, loop, and trim (no captions)
         filter_str = (
             f"[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
             f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
-            f"loop=loop=-1:size=32767,trim=duration={duration},setpts=PTS-STARTPTS,"
-            f"drawtext=text='{caption_wrapped}':fontsize=64:fontcolor=white:"
-            f"borderw=3:bordercolor=black:x=(w-text_w)/2:y=h*0.75[outv]"
+            f"loop=loop=-1:size=32767,trim=duration={duration},setpts=PTS-STARTPTS[outv]"
         )
         
         run_cmd([
@@ -384,13 +492,12 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
     
     if progress_cb: progress_cb(0.75, "Joining segments...")
     
-    # 3. Create concat list for video segments
+    # 3. Concat all video segments
     video_list = temp / "videos.txt"
     with open(video_list, "w") as f:
         for v in segment_videos:
             f.write(f"file '{v}'\n")
     
-    # Concat all video segments
     main_video = str(temp / "main.mp4")
     run_cmd([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
@@ -402,7 +509,6 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
     # 4. Add closing template
     if progress_cb: progress_cb(0.85, "Adding closing...")
     
-    # Scale closing
     closing_scaled = str(temp / "closing_scaled.mp4")
     run_cmd([
         "ffmpeg", "-y", "-i", closing,
@@ -412,7 +518,6 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
         closing_scaled
     ], "scale closing")
     
-    # Concat main + closing
     final_video_list = temp / "final_videos.txt"
     with open(final_video_list, "w") as f:
         f.write(f"file '{main_video}'\n")
@@ -426,7 +531,7 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
         video_no_audio
     ], "concat final")
     
-    # 5. Create silent audio for closing and merge
+    # 5. Add audio
     if progress_cb: progress_cb(0.9, "Adding audio...")
     
     close_dur = get_duration(closing)
@@ -435,7 +540,6 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
              "-i", f"anullsrc=r=24000:cl=mono:d={close_dur}",
              "-c:a", "pcm_s16le", silent], "silent")
     
-    # Concat all audio
     final_audio_list = temp / "final_audio.txt"
     with open(final_audio_list, "w") as f:
         f.write(f"file '{merged}'\n")
@@ -446,7 +550,7 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
              "-i", str(final_audio_list),
              "-c:a", "pcm_s16le", final_audio], "concat audio")
     
-    # 6. Merge video and audio
+    # 6. Final merge
     run_cmd([
         "ffmpeg", "-y",
         "-i", video_no_audio,
@@ -464,77 +568,96 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
 # ============================================================================
 
 def main():
-    # Header
-    st.markdown('<h1 class="main-title">🐕 Pawdcast Skit Factory</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="subtitle">Paste article → Get video • Fully automated like MakeReels.ai</p>', unsafe_allow_html=True)
+    # Header with logo
+    st.markdown(f"""
+    <div class="header-container">
+        <img src="{LOGO_URL}" class="logo-img" alt="Pawdcast Logo">
+        <div>
+            <h1 class="main-title">Pawdcast Skit Factory</h1>
+            <p class="subtitle">Transform articles into podcast videos instantly</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     
     # Check FFmpeg
     if not check_ffmpeg():
-        st.error("⚠️ FFmpeg not available. Contact administrator.")
+        st.error("⚠️ FFmpeg not available. Please contact administrator.")
         return
     
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ Settings")
+        st.markdown(f'<img src="{LOGO_URL}" style="width: 50px; border-radius: 12px; margin-bottom: 1rem;">', unsafe_allow_html=True)
+        st.markdown("### ⚙️ Settings")
         
         # API Key
         api_key = ""
         if hasattr(st, 'secrets') and st.secrets and "GEMINI_API_KEY" in st.secrets:
             api_key = st.secrets["GEMINI_API_KEY"]
-            st.markdown('<span class="badge-success">✅ API Key Ready</span>', unsafe_allow_html=True)
+            st.markdown('<span class="badge badge-success">✓ API Ready</span>', unsafe_allow_html=True)
         else:
-            api_key = st.text_input("Gemini API Key", type="password",
-                                    help="Get free at aistudio.google.com")
+            api_key = st.text_input("Gemini API Key", type="password")
             if api_key:
-                st.markdown('<span class="badge-success">✅ Key entered</span>', unsafe_allow_html=True)
+                st.markdown('<span class="badge badge-success">✓ Key Set</span>', unsafe_allow_html=True)
             else:
-                st.markdown('[Get free API key →](https://aistudio.google.com/app/apikey)')
+                st.markdown('[Get free key →](https://aistudio.google.com/app/apikey)')
         
-        st.divider()
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         
         # Voices
-        st.subheader("🎙️ Voices")
+        st.markdown("### 🎙️ Voices")
         voice1 = st.selectbox("Speaker 1", list(VOICE_OPTIONS.keys()), index=0)
         voice2 = st.selectbox("Speaker 2", list(VOICE_OPTIONS.keys()), index=1)
         
-        st.divider()
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         
         # Templates
-        st.subheader("🎬 Templates (16:9)")
-        tmpl1 = st.file_uploader("Speaker 1 video", type=["mp4"], key="t1")
-        tmpl2 = st.file_uploader("Speaker 2 video", type=["mp4"], key="t2")
-        tmpl_c = st.file_uploader("Closing video", type=["mp4"], key="tc")
+        st.markdown("### 🎬 Video Templates")
+        st.caption("Upload 1920×1080 MP4 files")
+        
+        tmpl1 = st.file_uploader("Speaker 1", type=["mp4"], key="t1")
+        tmpl2 = st.file_uploader("Speaker 2", type=["mp4"], key="t2")
+        tmpl_c = st.file_uploader("Closing", type=["mp4"], key="tc")
         
         ready = all([tmpl1, tmpl2, tmpl_c])
         if ready:
-            st.markdown('<span class="badge-success">✅ Templates ready</span>', unsafe_allow_html=True)
+            st.markdown('<span class="badge badge-success">✓ Templates Ready</span>', unsafe_allow_html=True)
         else:
-            st.markdown('<span class="badge-warning">⚠️ Upload all 3</span>', unsafe_allow_html=True)
+            st.markdown('<span class="badge badge-warning">⚠ Upload all 3</span>', unsafe_allow_html=True)
     
-    # Main area
+    # Main content
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("📝 Article")
-        article = st.text_area("Paste article", height=350, 
-                               placeholder="Paste your news article here...",
-                               label_visibility="collapsed")
+        st.markdown('<p class="section-header">📝 Article</p>', unsafe_allow_html=True)
+        article = st.text_area(
+            "Article",
+            height=320,
+            placeholder="Paste your news article here...\n\nThe AI will transform it into a podcast dialogue.",
+            label_visibility="collapsed"
+        )
+        if article:
+            word_count = len(article.split())
+            st.caption(f"📊 {word_count} words")
     
     with col2:
-        st.subheader("📜 Skit Preview")
+        st.markdown('<p class="section-header">📜 Generated Skit</p>', unsafe_allow_html=True)
         skit_area = st.empty()
-        skit_area.text_area("Skit", "Skit will appear here...", height=350,
-                           disabled=True, label_visibility="collapsed")
+        skit_area.text_area(
+            "Skit",
+            value="Your skit will appear here...",
+            height=320,
+            disabled=True,
+            label_visibility="collapsed"
+        )
     
     # Create button
     st.markdown("<br>", unsafe_allow_html=True)
     _, btn_col, _ = st.columns([1, 2, 1])
     with btn_col:
-        create = st.button("🚀 CREATE PAWDCAST", use_container_width=True)
+        create = st.button("🚀 Create Pawdcast", use_container_width=True)
     
     # Process
     if create:
-        # Validate
         errors = []
         if not api_key: errors.append("API key required")
         if not article.strip(): errors.append("Article required")
@@ -557,7 +680,7 @@ def main():
                 progress.progress(0.1)
                 
                 skit = generate_skit(article, api_key)
-                skit_area.text_area("Skit", skit, height=350, label_visibility="collapsed")
+                skit_area.text_area("Skit", skit, height=320, label_visibility="collapsed")
                 
                 lines = parse_skit(skit)
                 if not lines:
@@ -584,7 +707,7 @@ def main():
                 for i, (spk, txt) in enumerate(lines):
                     pct = 0.2 + (i / len(lines)) * 0.25
                     progress.progress(pct)
-                    status.info(f"🎙️ Voice {i+1}/{len(lines)}...")
+                    status.info(f"🎙️ Generating voice {i+1}/{len(lines)}...")
                     
                     voice = VOICE_OPTIONS[voice1] if "1" in spk else VOICE_OPTIONS[voice2]
                     audio = str(tmp / f"a{i}.wav")
@@ -611,34 +734,56 @@ def main():
                 
                 elapsed = time.time() - t0
                 progress.progress(1.0)
-                status.success(f"✅ Done in {elapsed:.0f}s!")
+                status.success(f"✅ Created in {elapsed:.0f} seconds!")
                 
-                # Show results
-                st.header("🎉 Your Pawdcast")
+                # Results
+                st.markdown("---")
+                st.markdown("### 🎉 Your Pawdcast is Ready!")
+                
+                st.markdown('<div class="video-container">', unsafe_allow_html=True)
                 st.video(video_bytes)
+                st.markdown('</div>', unsafe_allow_html=True)
                 
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.download_button("📥 Download MP4", video_bytes,
-                                      f"pawdcast_{ts}.mp4", "video/mp4",
-                                      use_container_width=True)
+                    st.download_button(
+                        "📥 Download Video",
+                        video_bytes,
+                        f"pawdcast_{ts}.mp4",
+                        "video/mp4",
+                        use_container_width=True
+                    )
                 with c2:
-                    st.download_button("📥 Download Script", skit,
-                                      f"pawdcast_{ts}.txt", "text/plain",
-                                      use_container_width=True)
+                    st.download_button(
+                        "📄 Download Script",
+                        skit,
+                        f"pawdcast_{ts}.txt",
+                        "text/plain",
+                        use_container_width=True
+                    )
                 
-                st.info(f"📊 {len(lines)} lines • {elapsed:.0f}s • 1920×1080")
+                st.markdown(f"""
+                <div class="info-card">
+                    <strong>📊 Video Stats</strong><br>
+                    Resolution: 1920×1080 • Lines: {len(lines)} • Time: {elapsed:.0f}s
+                </div>
+                """, unsafe_allow_html=True)
                 
             except Exception as e:
                 st.error(f"❌ {e}")
                 import traceback
-                with st.expander("Details"):
+                with st.expander("Show details"):
                     st.code(traceback.format_exc())
     
     # Footer
-    st.markdown("---")
-    st.caption("Made for [The Shib Daily](https://news.shib.io) • Powered by Gemini AI")
+    st.markdown("""
+    <div class="footer">
+        <div class="divider"></div>
+        Made with 🧡 for <a href="https://news.shib.io" target="_blank">The Shib Daily</a><br>
+        Powered by Gemini AI
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()

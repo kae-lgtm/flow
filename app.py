@@ -237,34 +237,51 @@ def generate_skit(article, api_key):
 
 def generate_audio(text, voice, api_key, output_path):
     """Generate TTS audio using Gemini."""
-    client = genai.Client(api_key=api_key)
-    
-    response = client.models.generate_content(
-        model=TTS_MODEL,
-        contents=f'Say this in a warm, engaging podcast host tone: "{text}"',
-        config=types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=voice
+    try:
+        client = genai.Client(api_key=api_key)
+        
+        response = client.models.generate_content(
+            model=TTS_MODEL,
+            contents=f'Say this in a warm, engaging podcast host tone: "{text}"',
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name=voice
+                        )
                     )
                 )
             )
         )
-    )
-    
-    # Decode and save audio
-    audio_b64 = response.candidates[0].content.parts[0].inline_data.data
-    pcm_data = base64.b64decode(audio_b64)
-    
-    with wave.open(output_path, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(24000)
-        wf.writeframes(pcm_data)
-    
-    return output_path
+        
+        # Get the audio data from response
+        audio_part = response.candidates[0].content.parts[0]
+        audio_data = audio_part.inline_data.data
+        
+        # Handle if data is already bytes or needs decoding
+        if isinstance(audio_data, bytes):
+            pcm_data = audio_data
+        elif isinstance(audio_data, str):
+            # Fix padding if needed
+            missing_padding = len(audio_data) % 4
+            if missing_padding:
+                audio_data += '=' * (4 - missing_padding)
+            pcm_data = base64.b64decode(audio_data)
+        else:
+            raise Exception(f"Unexpected audio data type: {type(audio_data)}")
+        
+        # Save as WAV (24kHz, 16-bit, mono)
+        with wave.open(output_path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(pcm_data)
+        
+        return output_path
+        
+    except Exception as e:
+        raise Exception(f"Audio generation failed: {str(e)}")
 
 def get_duration(path):
     """Get media file duration."""

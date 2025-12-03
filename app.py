@@ -332,7 +332,7 @@ def download_template(url, output_path):
     except:
         return False
 
-def detect_silence_gaps(audio_path, min_silence_duration=0.3, silence_threshold="-35dB"):
+def detect_silence_gaps(audio_path, min_silence_duration=0.2, silence_threshold="-35dB"):
     """Detect silence gaps in audio to find speaker switch points."""
     # Use FFmpeg's silencedetect filter
     result = subprocess.run([

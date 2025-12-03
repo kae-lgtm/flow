@@ -455,7 +455,7 @@ def main():
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
     
     # ========== AUDIO MODE (FREE) ==========
-        mode = st.radio(
+            mode = st.radio(
         "Mode",
         ["audio", "skit", "article", "lines"],
         format_func=lambda x: {
@@ -464,7 +464,8 @@ def main():
             "article": "Article → full auto",
             "lines": "Upload each line separately (BEST QUALITY)"
         }[x],
-        horizontal=True
+        horizontal=True,
+        label_visibility="collapsed"
     )
             # ========== NEW PERFECT MODE: UPLOAD EACH LINE SEPARATELY ==========
     elif mode == "lines":
@@ -787,7 +788,80 @@ def main():
                         
                     except Exception as e:
                         st.error(f"❌ {e}")
-    
+        # ========== PERFECT MODE: UPLOAD EACH LINE SEPARATELY (100% FREE & BEST QUALITY) ==========
+    elif mode == "lines":
+        st.markdown('<span class="badge-free">BEST QUALITY · 100% FREE · PERFECT SYNC</span>', unsafe_allow_html=True)
+        st.markdown("#### Upload Audio Per Line")
+        st.caption("Upload one audio file for each line → Zero timing issues ever")
+
+        # Get skit first
+        skit_text = st.text_area("1. Paste your skit first", height=200, key="skit_lines")
+        lines = parse_skit(skit_text) if skit_text else []
+
+        if not lines:
+            st.warning("Paste your skit above first")
+        else:
+            st.success(f"Ready for {len(lines)} audio files")
+
+            uploaded_audios = []
+            for i, (speaker, text) in enumerate(lines):
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"**{speaker}:** {text[:70]}{'...' if len(text)>70 else ''}")
+                with col2:
+                    audio = st.file_uploader(f"Line {i+1}", type=["mp3","wav","m4a"], key=f"line_{i}")
+                    if audio:
+                        uploaded_audios.append((i, audio))
+
+            # Check all uploaded
+            if len(uploaded_audios) == len(lines) and templates_ready:
+                if st.button("CREATE PERFECT VIDEO", use_container_width=True):
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        tmp = Path(tmpdir)
+                        progress = st.progress(0)
+                        status = st.empty()
+
+                        try:
+                            segments = []
+                            for idx, audio_file in uploaded_audios:
+                                audio_path = str(tmp / f"line_{idx}.wav")
+                                with open(audio_path, "wb") as f:
+                                    f.write(audio_file.read())
+                                duration = get_duration(audio_path)
+                                segments.append({
+                                    "speaker": lines[idx][0],
+                                    "text": lines[idx][1],
+                                    "audio": audio_path,
+                                    "duration": duration
+                                })
+                                progress.progress((idx + 1) / len(lines))
+
+                            # Save templates
+                            t1_path = str(tmp / "t1.mp4"); open(t1_path, "wb").write(tmpl1.read())
+                            t2_path = str(tmp / "t2.mp4"); open(t2_path, "wb").write(tmpl2.read())
+                            tc_path = str(tmp / "tc.mp4"); open(tc_path, "wb").write(tmpl_c.read())
+
+                            output = str(tmp / "perfect_pawdcast.mp4")
+                            create_video_from_segments(segments, t1_path, t2_path, tc_path, output,
+                                lambda p, m: (progress.progress(p), status.info(m)))
+
+                            st.video(open(output, "rb").read())
+                            st.download_button(
+                                "DOWNLOAD PERFECT VIDEO",
+                                open(output, "rb").read(),
+                                f"perfect_{datetime.now().strftime('%H%M')}.mp4",
+                                "video/mp4",
+                                use_container_width=True
+                            )
+                            st.success("PERFECT VIDEO CREATED!")
+
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                            with st.expander("Details"):
+                                import traceback
+                                st.code(traceback.format_exc())
+            else:
+                st.info(f"Upload all {len(lines)} audio files + templates to continue")
     # ========== ARTICLE MODE ==========
     else:
         st.markdown("#### 📰 Article Mode")

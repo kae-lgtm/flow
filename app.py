@@ -335,70 +335,127 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
         s['start'], s['end'] = t, t + s['duration']
         t = s['end']
     
-    # 2. Build filter graph
+    # 2. Build filter graph - using simpler approach
     if progress_cb: progress_cb(0.6, "Building video...")
     
-    # Speaker switch conditions
-    s1_cond = "+".join([f"between(t,{s['start']:.2f},{s['end']:.2f})" 
-                        for s in segments if "1" in s['speaker']]) or "0"
-    s2_cond = "+".join([f"between(t,{s['start']:.2f},{s['end']:.2f})" 
-                        for s in segments if "2" in s['speaker']]) or "0"
+    # Create individual video segments for each speaker line
+    segment_videos = []
     
-    filters = [
-        # Scale and loop templates
-        f"[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,loop=-1:size=9999,setpts=PTS-STARTPTS,trim=duration={total_dur}[v1]",
-        f"[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,loop=-1:size=9999,setpts=PTS-STARTPTS,trim=duration={total_dur}[v2]",
-        # Switch between speakers
-        f"[v1][v2]overlay=enable='{s2_cond}'[main]"
-    ]
-    
-    # Add captions for each segment
-    prev = "[main]"
     for i, s in enumerate(segments):
-        txt = escape_ffmpeg(wrap_text(s['text']))
-        label = f"[c{i}]" if i < len(segments)-1 else "[captioned]"
-        filters.append(
-            f"{prev}drawtext=text='{txt}':fontsize=64:fontcolor=white:"
-            f"borderw=3:bordercolor=black:x=(w-text_w)/2:y=h*0.75:"
-            f"enable='between(t,{s['start']:.2f},{s['end']:.2f})'{label}"
+        seg_out = str(temp / f"seg_{i}.mp4")
+        template = tmpl1 if "1" in s['speaker'] else tmpl2
+        duration = s['duration']
+        caption = s['text'].replace("'", "'\\''").replace(":", "\\:")
+        
+        # Word wrap caption
+        words = caption.split()
+        lines = []
+        line = []
+        for word in words:
+            line.append(word)
+            if len(" ".join(line)) > 40:
+                lines.append(" ".join(line[:-1]))
+                line = [word]
+        if line:
+            lines.append(" ".join(line))
+        caption_wrapped = "\\n".join(lines)
+        
+        # Create segment with caption
+        filter_str = (
+            f"[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
+            f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
+            f"loop=loop=-1:size=32767,trim=duration={duration},setpts=PTS-STARTPTS,"
+            f"drawtext=text='{caption_wrapped}':fontsize=64:fontcolor=white:"
+            f"borderw=3:bordercolor=black:x=(w-text_w)/2:y=h*0.75[outv]"
         )
-        prev = label
+        
+        run_cmd([
+            "ffmpeg", "-y",
+            "-i", template,
+            "-filter_complex", filter_str,
+            "-map", "[outv]",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-t", str(duration),
+            "-an",
+            seg_out
+        ], f"segment {i}")
+        
+        segment_videos.append(seg_out)
     
-    # Add closing
+    if progress_cb: progress_cb(0.75, "Joining segments...")
+    
+    # 3. Create concat list for video segments
+    video_list = temp / "videos.txt"
+    with open(video_list, "w") as f:
+        for v in segment_videos:
+            f.write(f"file '{v}'\n")
+    
+    # Concat all video segments
+    main_video = str(temp / "main.mp4")
+    run_cmd([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(video_list),
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        main_video
+    ], "concat videos")
+    
+    # 4. Add closing template
+    if progress_cb: progress_cb(0.85, "Adding closing...")
+    
+    # Scale closing
+    closing_scaled = str(temp / "closing_scaled.mp4")
+    run_cmd([
+        "ffmpeg", "-y", "-i", closing,
+        "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-an",
+        closing_scaled
+    ], "scale closing")
+    
+    # Concat main + closing
+    final_video_list = temp / "final_videos.txt"
+    with open(final_video_list, "w") as f:
+        f.write(f"file '{main_video}'\n")
+        f.write(f"file '{closing_scaled}'\n")
+    
+    video_no_audio = str(temp / "video_no_audio.mp4")
+    run_cmd([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(final_video_list),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        video_no_audio
+    ], "concat final")
+    
+    # 5. Create silent audio for closing and merge
+    if progress_cb: progress_cb(0.9, "Adding audio...")
+    
     close_dur = get_duration(closing)
-    filters.append("[2:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[close]")
-    filters.append("[captioned][close]concat=n=2:v=1:a=0[outv]")
-    
-    # 3. Create silent audio for closing
-    if progress_cb: progress_cb(0.7, "Adding closing...")
-    
     silent = str(temp / "silent.wav")
-    run_cmd(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r=24000:cl=mono:d={close_dur}",
+    run_cmd(["ffmpeg", "-y", "-f", "lavfi", 
+             "-i", f"anullsrc=r=24000:cl=mono:d={close_dur}",
              "-c:a", "pcm_s16le", silent], "silent")
     
-    # Concat audio
+    # Concat all audio
     final_audio_list = temp / "final_audio.txt"
     with open(final_audio_list, "w") as f:
-        f.write(f"file '{merged}'\nfile '{silent}'\n")
+        f.write(f"file '{merged}'\n")
+        f.write(f"file '{silent}'\n")
     
     final_audio = str(temp / "final_audio.wav")
-    run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(final_audio_list),
+    run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", 
+             "-i", str(final_audio_list),
              "-c:a", "pcm_s16le", final_audio], "concat audio")
     
-    # 4. Render final video
-    if progress_cb: progress_cb(0.8, "Rendering video...")
-    
-    filter_str = ";".join(filters)
+    # 6. Merge video and audio
     run_cmd([
         "ffmpeg", "-y",
-        "-i", tmpl1, "-i", tmpl2, "-i", closing, "-i", final_audio,
-        "-filter_complex", filter_str,
-        "-map", "[outv]", "-map", "3:a",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-i", video_no_audio,
+        "-i", final_audio,
+        "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart", "-shortest",
+        "-shortest",
         output
-    ], "render")
+    ], "final merge")
     
     if progress_cb: progress_cb(1.0, "Done!")
 

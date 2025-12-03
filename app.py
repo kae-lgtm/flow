@@ -22,6 +22,8 @@ from pathlib import Path
 from datetime import datetime
 import time
 import base64
+import asyncio
+import edge_tts
 
 # ============================================================================
 # PAGE CONFIG
@@ -289,6 +291,27 @@ section[data-testid="stSidebar"] .stMarkdown {
 # CONFIGURATION
 # ============================================================================
 
+def get_api_keys():
+    """Get list of API keys from secrets (supports multiple keys for rotation)."""
+    keys = []
+    if hasattr(st, 'secrets') and st.secrets:
+        # Check for single key
+        if "GEMINI_API_KEY" in st.secrets:
+            keys.append(st.secrets["GEMINI_API_KEY"])
+        # Check for multiple keys (GEMINI_API_KEY_1, GEMINI_API_KEY_2, etc.)
+        for i in range(1, 11):  # Support up to 10 keys
+            key_name = f"GEMINI_API_KEY_{i}"
+            if key_name in st.secrets:
+                keys.append(st.secrets[key_name])
+    return keys
+
+def get_next_api_key(keys, current_index=0):
+    """Rotate to next API key."""
+    if not keys:
+        return None, 0
+    next_index = (current_index + 1) % len(keys)
+    return keys[next_index], next_index
+
 SKIT_PROMPT = """Role: You are a "Content Repurposing Expert" specializing in transforming news articles into short-form multimedia scripts and metadata. Write in a natural, human-like style. Avoid AI patterns, formulaic phrasing, predictable transitions, contrast framing, em dashes, and overused sentence templates (e.g., "From … to …," "This isn't … this is …," "Clearly …," "Interestingly …"). Vary sentence lengths, use concrete examples, and maintain a warm, engaging, nuanced tone. Avoid fabricating facts, quotes, or data. Avoid outdated or unreliable sources without clear warning. Always cite sources or indicate if verification is uncertain. Avoid presenting speculation or assumptions as fact. Do not generate fake citations. If unsure, explicitly disclose uncertainty. Avoid filler, vague wording, or omitting context to mask knowledge gaps. Prioritize correctness over style or readability. Failsafe Step: Before responding, internally check: "Is every statement verifiable, supported by credible sources, free of fabrication, and transparently cited? If not, revise until it is."
 
 Core Task: When given a news article, generate ONLY Part 1: Podcast Skit (100–140 words total, ~45–70 seconds when spoken)
@@ -312,20 +335,22 @@ Speaker 1: "..."
 Article:
 """
 
+# Edge TTS Voice Options (FREE, no API key needed!)
+# Full list: https://github.com/rany2/edge-tts
 VOICE_OPTIONS = {
-    "Enceladus": "Enceladus",
-    "Puck": "Puck",
-    "Charon": "Charon",
-    "Kore": "Kore",
-    "Fenrir": "Fenrir",
-    "Aoede": "Aoede",
-    "Leda": "Leda",
-    "Orus": "Orus",
-    "Zephyr": "Zephyr"
+    "Guy (US)": "en-US-GuyNeural",           # Deep male voice - great for Speaker 1
+    "Davis (US)": "en-US-DavisNeural",       # Warm male voice - great for Speaker 2
+    "Tony (US)": "en-US-TonyNeural",         # Casual male voice
+    "Jason (US)": "en-US-JasonNeural",       # Professional male
+    "Christopher (US)": "en-US-ChristopherNeural",  # News anchor style
+    "Eric (US)": "en-US-EricNeural",         # Friendly male
+    "Ryan (UK)": "en-GB-RyanNeural",         # British male
+    "William (AU)": "en-AU-WilliamNeural",   # Australian male
+    "Jenny (US)": "en-US-JennyNeural",       # Friendly female
+    "Aria (US)": "en-US-AriaNeural",         # Professional female
 }
 
 SKIT_MODEL = "gemini-2.0-flash"
-TTS_MODEL = "gemini-2.5-flash-preview-tts"
 
 LOGO_URL = "https://news.shib.io/wp-content/uploads/2025/12/Untitled-design-1.png"
 
@@ -391,47 +416,18 @@ def generate_skit(article, api_key):
     except Exception as e:
         raise Exception(f"Skit generation failed: {str(e)}")
 
-def generate_audio(text, voice, api_key, output_path):
-    """Generate TTS audio using Gemini."""
+async def generate_audio_async(text, voice, output_path):
+    """Generate TTS audio using Edge TTS (FREE, unlimited)."""
+    communicate = edge_tts.Communicate(text, voice)
+    await communicate.save(output_path)
+    return output_path
+
+def generate_audio(text, voice, output_path):
+    """Wrapper to run async Edge TTS."""
     try:
-        client = genai.Client(api_key=api_key)
-        
-        response = client.models.generate_content(
-            model=TTS_MODEL,
-            contents=f'Say this in a warm, engaging podcast host tone: "{text}"',
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=voice
-                        )
-                    )
-                )
-            )
-        )
-        
-        audio_part = response.candidates[0].content.parts[0]
-        audio_data = audio_part.inline_data.data
-        
-        if isinstance(audio_data, bytes):
-            pcm_data = audio_data
-        elif isinstance(audio_data, str):
-            missing_padding = len(audio_data) % 4
-            if missing_padding:
-                audio_data += '=' * (4 - missing_padding)
-            pcm_data = base64.b64decode(audio_data)
-        else:
-            raise Exception(f"Unexpected audio data type: {type(audio_data)}")
-        
-        with wave.open(output_path, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(24000)
-            wf.writeframes(pcm_data)
-        
+        # Run the async function
+        asyncio.run(generate_audio_async(text, voice, output_path))
         return output_path
-        
     except Exception as e:
         raise Exception(f"Audio generation failed: {str(e)}")
 
@@ -448,13 +444,25 @@ def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
     """Assemble final video with FFmpeg - NO CAPTIONS, WITH CLOSING AUDIO."""
     temp = Path(output).parent
     
-    # 1. Merge all skit audio
+    # 1. Convert and merge all skit audio (Edge TTS outputs MP3)
     if progress_cb: progress_cb(0.5, "Merging audio...")
+    
+    # First convert each MP3 to WAV with consistent format
+    wav_files = []
+    for i, s in enumerate(segments):
+        wav_path = str(temp / f"audio_{i}.wav")
+        run_cmd([
+            "ffmpeg", "-y", "-i", s['audio'],
+            "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le",
+            wav_path
+        ], f"convert audio {i}")
+        wav_files.append(wav_path)
+        s['audio_wav'] = wav_path
     
     audio_list = temp / "audio.txt"
     with open(audio_list, "w") as f:
-        for s in segments:
-            f.write(f"file '{s['audio']}'\n")
+        for wav in wav_files:
+            f.write(f"file '{wav}'\n")
     
     merged = str(temp / "merged.wav")
     run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(audio_list), 
@@ -618,26 +626,52 @@ def main():
     
     with col1:
         st.markdown('<p class="section-header">📝 Article</p>', unsafe_allow_html=True)
-        article = st.text_area(
-            "Article",
-            height=320,
-            placeholder="Paste your news article here...\n\nThe AI will transform it into a podcast dialogue.",
-            label_visibility="collapsed"
-        )
-        if article:
-            word_count = len(article.split())
-            st.caption(f"📊 {word_count} words")
+        
+        # Option to skip skit generation
+        skip_skit = st.checkbox("⚡ Skip AI generation (paste your own skit)", 
+                                help="Check this to paste a pre-written skit and skip the API call - 100% FREE!")
+        
+        if skip_skit:
+            st.info("💡 Paste your skit in the right panel. Format: `Speaker 1: \"...\"` and `Speaker 2: \"...\"`")
+            article = ""
+        else:
+            article = st.text_area(
+                "Article",
+                height=280,
+                placeholder="Paste your news article here...\n\nThe AI will transform it into a podcast dialogue.",
+                label_visibility="collapsed"
+            )
+            if article:
+                word_count = len(article.split())
+                st.caption(f"📊 {word_count} words")
     
     with col2:
-        st.markdown('<p class="section-header">📜 Generated Skit</p>', unsafe_allow_html=True)
-        skit_area = st.empty()
-        skit_area.text_area(
-            "Skit",
-            value="Your skit will appear here...",
-            height=320,
-            disabled=True,
-            label_visibility="collapsed"
-        )
+        st.markdown('<p class="section-header">📜 Skit</p>', unsafe_allow_html=True)
+        
+        if skip_skit:
+            # Editable skit area when skipping AI generation
+            skit_input = st.text_area(
+                "Skit",
+                height=320,
+                placeholder='''Paste your skit here in this format:
+
+Speaker 1: "Your opening line here..."
+Speaker 2: "Response line here..."
+Speaker 1: "Next line..."
+Speaker 2: "And so on..."''',
+                label_visibility="collapsed"
+            )
+        else:
+            # Read-only preview when using AI generation
+            skit_input = ""
+            skit_area = st.empty()
+            skit_area.text_area(
+                "Skit",
+                value="Your skit will appear here after AI generation...",
+                height=320,
+                disabled=True,
+                label_visibility="collapsed"
+            )
     
     # Create button
     st.markdown("<br>", unsafe_allow_html=True)
@@ -647,10 +681,18 @@ def main():
     
     # Process
     if create:
+        # Validation - different requirements based on mode
         errors = []
-        if not api_key: errors.append("API key required")
-        if not article.strip(): errors.append("Article required")
-        if not ready: errors.append("All templates required")
+        if skip_skit:
+            if not skit_input.strip():
+                errors.append("Paste your skit in the right panel")
+        else:
+            if not api_key:
+                errors.append("API key required (or use 'Skip AI generation' option)")
+            if not article.strip():
+                errors.append("Article required")
+        if not ready:
+            errors.append("All templates required")
         
         if errors:
             st.error("❌ " + " • ".join(errors))
@@ -664,20 +706,26 @@ def main():
             try:
                 t0 = time.time()
                 
-                # 1. Generate skit
-                status.info("🤖 Generating skit...")
-                progress.progress(0.1)
-                
-                skit = generate_skit(article, api_key)
-                skit_area.text_area("Skit", skit, height=320, label_visibility="collapsed")
+                # 1. Get skit (either from AI or pasted)
+                if skip_skit:
+                    # Use pasted skit directly - NO API CALL!
+                    status.info("📜 Using your pasted skit...")
+                    progress.progress(0.15)
+                    skit = skit_input
+                else:
+                    # Generate with AI
+                    status.info("🤖 Generating skit...")
+                    progress.progress(0.1)
+                    skit = generate_skit(article, api_key)
+                    skit_area.text_area("Skit", skit, height=320, label_visibility="collapsed")
                 
                 lines = parse_skit(skit)
                 if not lines:
-                    st.error("❌ Could not parse skit. Try again.")
+                    st.error("❌ Could not parse skit. Make sure format is: Speaker 1: \"...\" Speaker 2: \"...\"")
                     st.code(skit)
                     return
                 
-                progress.progress(0.15)
+                progress.progress(0.2)
                 
                 # 2. Save templates
                 status.info("💾 Processing templates...")
@@ -691,7 +739,7 @@ def main():
                 
                 progress.progress(0.2)
                 
-                # 3. Generate TTS
+                # 3. Generate TTS (FREE with Edge TTS!)
                 segments = []
                 for i, (spk, txt) in enumerate(lines):
                     pct = 0.2 + (i / len(lines)) * 0.25
@@ -699,8 +747,8 @@ def main():
                     status.info(f"🎙️ Generating voice {i+1}/{len(lines)}...")
                     
                     voice = VOICE_OPTIONS[voice1] if "1" in spk else VOICE_OPTIONS[voice2]
-                    audio = str(tmp / f"a{i}.wav")
-                    generate_audio(txt, voice, api_key, audio)
+                    audio = str(tmp / f"a{i}.mp3")
+                    generate_audio(txt, voice, audio)
                     
                     segments.append({
                         "speaker": spk,
@@ -755,7 +803,10 @@ def main():
                 st.markdown(f"""
                 <div class="info-card">
                     <strong>📊 Video Stats</strong><br>
-                    Resolution: 1920×1080 • Lines: {len(lines)} • Time: {elapsed:.0f}s
+                    Resolution: 1920×1080 • Lines: {len(lines)} • Time: {elapsed:.0f}s<br>
+                    <span style="color: {'#10b981' if skip_skit else '#f7931a'}">
+                        {'✓ 100% FREE (no API used)' if skip_skit else '• 1 API call (skit generation)'}
+                    </span>
                 </div>
                 """, unsafe_allow_html=True)
                 

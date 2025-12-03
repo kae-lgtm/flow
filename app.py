@@ -35,12 +35,12 @@ st.set_page_config(
 # CONFIGURATION
 # ============================================================================
 
-# Pre-configured template URLs (change these to your actual hosted video URLs)
-# Host your MP4 files on a CDN, Google Drive (with direct link), or any public URL
+# Pre-configured template URLs - UPDATE THESE TO YOUR ACTUAL URLs
+# Upload your MP4 files somewhere and put the direct links here
 DEFAULT_TEMPLATES = {
-    "speaker1": "https://news.shib.io/wp-content/uploads/pawdcast/speaker1.mp4",
-    "speaker2": "https://news.shib.io/wp-content/uploads/pawdcast/speaker2.mp4",
-    "closing": "https://news.shib.io/wp-content/uploads/pawdcast/closing.mp4"
+    "speaker1": "",  # e.g., "https://yoursite.com/speaker1.mp4"
+    "speaker2": "",  # e.g., "https://yoursite.com/speaker2.mp4"  
+    "closing": ""    # e.g., "https://yoursite.com/closing.mp4"
 }
 
 # Edge TTS Voice Options (FREE)
@@ -332,6 +332,74 @@ def download_template(url, output_path):
     except:
         return False
 
+def create_video_single_audio(segments, audio_path, tmpl1, tmpl2, closing, output, progress_cb=None):
+    """Create video from single complete audio file, switching speakers based on timing."""
+    temp = Path(output).parent
+    
+    if progress_cb: progress_cb(0.5, "Building video segments...")
+    
+    # Create video segments based on timing
+    segment_videos = []
+    for i, s in enumerate(segments):
+        seg_out = str(temp / f"seg_{i}.mp4")
+        template = tmpl1 if "1" in s['speaker'] else tmpl2
+        duration = s['duration']
+        
+        run_cmd([
+            "ffmpeg", "-y", "-i", template,
+            "-filter_complex", 
+            f"[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
+            f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
+            f"loop=loop=-1:size=32767,trim=duration={duration},setpts=PTS-STARTPTS[outv]",
+            "-map", "[outv]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-t", str(duration), "-an", seg_out
+        ], f"segment {i}")
+        segment_videos.append(seg_out)
+    
+    if progress_cb: progress_cb(0.7, "Joining segments...")
+    
+    # Concat video segments
+    video_list = temp / "videos.txt"
+    with open(video_list, "w") as f:
+        for v in segment_videos:
+            f.write(f"file '{v}'\n")
+    
+    main_video = str(temp / "main.mp4")
+    run_cmd(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(video_list),
+             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", main_video], "concat")
+    
+    if progress_cb: progress_cb(0.8, "Adding audio...")
+    
+    # Add the complete audio
+    main_with_audio = str(temp / "main_audio.mp4")
+    run_cmd([
+        "ffmpeg", "-y", "-i", main_video, "-i", audio_path,
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", main_with_audio
+    ], "add audio")
+    
+    if progress_cb: progress_cb(0.85, "Adding closing...")
+    
+    # Scale and add closing (with its audio)
+    closing_scaled = str(temp / "closing_scaled.mp4")
+    run_cmd([
+        "ffmpeg", "-y", "-i", closing,
+        "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "192k", closing_scaled
+    ], "scale closing")
+    
+    if progress_cb: progress_cb(0.9, "Final assembly...")
+    
+    run_cmd([
+        "ffmpeg", "-y", "-i", main_with_audio, "-i", closing_scaled,
+        "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]",
+        "-map", "[outv]", "-map", "[outa]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output
+    ], "final")
+    
+    if progress_cb: progress_cb(1.0, "Done!")
+
 def create_video(segments, tmpl1, tmpl2, closing, output, progress_cb=None):
     """Assemble final video with FFmpeg."""
     temp = Path(output).parent
@@ -508,6 +576,7 @@ def main():
         )
         
         audio_assignments = []
+        uploaded_audio_single = None
         
         if input_mode == "article":
             article = st.text_area("Article", height=250, 
@@ -517,21 +586,16 @@ def main():
             st.info("💡 Paste skit from [AI Studio](https://aistudio.google.com)")
         else:
             article = ""
-            st.success("🎉 **100% FREE!** Upload audio from AI Studio")
-            uploaded_audios = st.file_uploader(
-                "Audio files (in order)", type=["wav", "mp3"],
-                accept_multiple_files=True
+            st.success("🎉 **100% FREE!** Upload complete audio from AI Studio")
+            st.caption("Upload the full conversation audio (both speakers)")
+            
+            uploaded_audio_single = st.file_uploader(
+                "Complete audio file", type=["wav", "mp3"],
+                help="The full podcast audio with both speakers"
             )
-            if uploaded_audios:
-                st.caption(f"📁 {len(uploaded_audios)} files")
-                for i, audio in enumerate(uploaded_audios):
-                    c1, c2 = st.columns([3, 1])
-                    with c1:
-                        st.caption(f"{i+1}. {audio.name}")
-                    with c2:
-                        spk = st.selectbox(f"s{i}", ["Speaker 1", "Speaker 2"], 
-                                          index=i%2, key=f"spk_{i}", label_visibility="collapsed")
-                    audio_assignments.append({"file": audio, "speaker": spk})
+            
+            if uploaded_audio_single:
+                st.markdown('<span class="badge-success">✓ Audio uploaded</span>', unsafe_allow_html=True)
     
     with col2:
         if input_mode == "skit":
@@ -542,17 +606,17 @@ def main():
                 label_visibility="collapsed"
             )
         elif input_mode == "audio":
-            st.markdown("### ℹ️ Audio Mode Guide")
-            st.markdown("""
-            1. Generate skit in **AI Studio** (free)
-            2. Use **Speech Generation** for each line
-            3. Download as WAV files
-            4. Upload here in order
-            5. Click Create!
-            
-            💡 Name files: `01_s1.wav`, `02_s2.wav`...
-            """)
-            skit_input = ""
+            st.markdown("### 📜 Skit (for video timing)")
+            st.caption("Paste the skit so we know when to switch speakers")
+            skit_input = st.text_area(
+                "Skit", height=250,
+                placeholder='Speaker 1: "..."\nSpeaker 2: "..."\nSpeaker 1: "..."',
+                label_visibility="collapsed"
+            )
+            if skit_input:
+                lines = parse_skit(skit_input)
+                if lines:
+                    st.caption(f"✓ {len(lines)} speaker turns detected")
         else:
             st.markdown("### 📜 Generated Skit")
             skit_display = st.empty()
@@ -575,11 +639,15 @@ def main():
         elif input_mode == "skit":
             if not skit_input.strip(): errors.append("Paste skit")
             if tts_engine == "gemini" and not api_key: errors.append("API key required for Gemini TTS")
-        else:
-            if not audio_assignments: errors.append("Upload audio files")
+        else:  # audio mode
+            if not uploaded_audio_single: errors.append("Upload audio file")
+            if not skit_input.strip(): errors.append("Paste skit for timing")
         
         if not use_default and not templates_ready:
             errors.append("Upload all templates")
+        
+        if use_default and not all(DEFAULT_TEMPLATES.values()):
+            errors.append("Template URLs not configured - uncheck 'Use pre-configured templates' and upload manually")
         
         if errors:
             st.error("❌ " + " • ".join(errors))
@@ -621,19 +689,39 @@ def main():
                 
                 # Process based on mode
                 if input_mode == "audio":
-                    status.info("🎧 Processing audio files...")
+                    # SINGLE AUDIO MODE - split by timing based on skit
+                    status.info("🎧 Processing audio...")
+                    
+                    # Parse skit for timing
+                    lines = parse_skit(skit_input)
+                    if not lines:
+                        st.error("❌ Could not parse skit")
+                        return
+                    
+                    # Save the complete audio
+                    ext = uploaded_audio_single.name.split('.')[-1]
+                    full_audio_path = str(tmp / f"full_audio.{ext}")
+                    with open(full_audio_path, "wb") as f:
+                        f.write(uploaded_audio_single.read())
+                    
+                    total_duration = get_duration(full_audio_path)
+                    
+                    # Estimate timing: divide audio equally among lines
+                    # (In reality, timing varies, but this is a simple approach)
+                    num_lines = len(lines)
+                    time_per_line = total_duration / num_lines
+                    
                     segments = []
-                    for i, assign in enumerate(audio_assignments):
-                        ext = assign["file"].name.split('.')[-1]
-                        audio_path = str(tmp / f"a{i}.{ext}")
-                        with open(audio_path, "wb") as f:
-                            f.write(assign["file"].read())
+                    for i, (spk, txt) in enumerate(lines):
                         segments.append({
-                            "speaker": assign["speaker"],
-                            "text": f"[Audio {i+1}]",
-                            "audio": audio_path,
-                            "duration": get_duration(audio_path)
+                            "speaker": spk,
+                            "text": txt,
+                            "start": i * time_per_line,
+                            "duration": time_per_line
                         })
+                    
+                    # Store the full audio path for video creation
+                    full_audio_for_video = full_audio_path
                     progress.progress(0.3)
                     
                 else:
@@ -680,7 +768,13 @@ def main():
                     status.info(f"🎬 {msg}")
                 
                 output = str(tmp / "pawdcast.mp4")
-                create_video(segments, t1_path, t2_path, tc_path, output, update)
+                
+                if input_mode == "audio":
+                    # Single audio mode - use special video creation
+                    create_video_single_audio(segments, full_audio_for_video, t1_path, t2_path, tc_path, output, update)
+                else:
+                    # Normal mode with separate audio files
+                    create_video(segments, t1_path, t2_path, tc_path, output, update)
                 
                 with open(output, "rb") as f:
                     video_bytes = f.read()

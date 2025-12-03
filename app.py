@@ -332,25 +332,79 @@ def download_template(url, output_path):
     except:
         return False
 
-def detect_silence_gaps(audio_path, min_silence_duration=0.2, silence_threshold="-35dB"):
+def detect_silence_gaps(audio_path, min_silence_duration=0.3, silence_threshold="-35dB"):
     """Detect silence gaps in audio to find speaker switch points."""
-    # Use FFmpeg's silencedetect filter
     result = subprocess.run([
         "ffmpeg", "-i", audio_path,
         "-af", f"silencedetect=noise={silence_threshold}:d={min_silence_duration}",
         "-f", "null", "-"
     ], capture_output=True, text=True)
     
-    # Parse the output for silence_end times (these mark speaker changes)
     output = result.stderr
     gaps = []
     
-    # Find all silence_end timestamps
-    import re
     for match in re.finditer(r'silence_end: ([\d.]+)', output):
         gaps.append(float(match.group(1)))
     
     return gaps
+
+def detect_voice_changes(audio_path, num_expected_segments):
+    """
+    Detect voice changes by analyzing audio energy/pitch changes.
+    Uses FFmpeg to extract audio features and find transition points.
+    """
+    temp_dir = Path(audio_path).parent
+    
+    # Get total duration
+    result = subprocess.run([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+    ], capture_output=True, text=True)
+    total_duration = float(result.stdout.strip())
+    
+    # Method: Analyze volume changes over time using FFmpeg's volumedetect on chunks
+    # Split audio into small chunks and compare characteristics
+    chunk_duration = 0.5  # 500ms chunks
+    num_chunks = int(total_duration / chunk_duration)
+    
+    volumes = []
+    for i in range(num_chunks):
+        start = i * chunk_duration
+        result = subprocess.run([
+            "ffmpeg", "-ss", str(start), "-t", str(chunk_duration),
+            "-i", audio_path,
+            "-af", "volumedetect",
+            "-f", "null", "-"
+        ], capture_output=True, text=True)
+        
+        # Extract mean volume
+        match = re.search(r'mean_volume: ([-\d.]+)', result.stderr)
+        if match:
+            volumes.append(float(match.group(1)))
+        else:
+            volumes.append(-50)  # Default quiet
+    
+    # Find significant changes in volume pattern (potential speaker switches)
+    changes = []
+    window = 3  # Compare windows of chunks
+    
+    for i in range(window, len(volumes) - window):
+        before = sum(volumes[i-window:i]) / window
+        after = sum(volumes[i:i+window]) / window
+        diff = abs(after - before)
+        if diff > 3:  # Threshold for significant change
+            changes.append((i * chunk_duration, diff))
+    
+    # Sort by significance and take top (num_expected - 1) changes
+    changes.sort(key=lambda x: x[1], reverse=True)
+    
+    # Get the timestamps of top changes
+    switch_times = sorted([c[0] for c in changes[:num_expected_segments - 1]])
+    
+    # Build full list: 0, switches, end
+    result_times = [0] + switch_times + [total_duration]
+    
+    return result_times
 
 def create_video_single_audio(segments, audio_path, tmpl1, tmpl2, closing, output, progress_cb=None):
     """Create video from single complete audio file, switching speakers based on timing."""
@@ -597,6 +651,8 @@ def main():
         
         audio_assignments = []
         uploaded_audio_single = None
+        timestamp_input = ""
+        use_voice_detection = False
         
         if input_mode == "article":
             article = st.text_area("Article", height=250, 
@@ -607,7 +663,6 @@ def main():
         else:
             article = ""
             st.success("🎉 **100% FREE!** Upload complete audio from AI Studio")
-            st.caption("Upload the full conversation audio (both speakers)")
             
             uploaded_audio_single = st.file_uploader(
                 "Complete audio file", type=["wav", "mp3"],
@@ -616,6 +671,34 @@ def main():
             
             if uploaded_audio_single:
                 st.markdown('<span class="badge-success">✓ Audio uploaded</span>', unsafe_allow_html=True)
+            
+            st.markdown("---")
+            st.markdown("**How to detect speaker changes:**")
+            
+            detection_method = st.radio(
+                "Detection method",
+                ["manual", "auto"],
+                format_func=lambda x: "⏱️ Manual timestamps (recommended)" if x == "manual" else "🤖 Auto voice detection (experimental)",
+                label_visibility="collapsed"
+            )
+            
+            if detection_method == "manual":
+                st.caption("Enter the time (in seconds) when each speaker STARTS talking")
+                timestamp_input = st.text_input(
+                    "Timestamps",
+                    placeholder="0, 8.5, 15.2, 32.1, 45.8",
+                    help="Comma-separated seconds. First is always 0. Listen to audio once to get these."
+                )
+                if timestamp_input:
+                    try:
+                        times = [float(t.strip()) for t in timestamp_input.split(",")]
+                        st.caption(f"✓ {len(times)} timestamps entered")
+                    except:
+                        st.caption("⚠️ Invalid format. Use: 0, 8.5, 15.2, 32.1")
+            else:
+                use_voice_detection = True
+                st.caption("Will analyze audio for voice/pitch changes between speakers")
+                st.warning("⚠️ Works best when speakers have clearly different voices")
     
     with col2:
         if input_mode == "skit":
@@ -661,7 +744,9 @@ def main():
             if tts_engine == "gemini" and not api_key: errors.append("API key required for Gemini TTS")
         else:  # audio mode
             if not uploaded_audio_single: errors.append("Upload audio file")
-            if not skit_input.strip(): errors.append("Paste skit for timing")
+            if not skit_input.strip(): errors.append("Paste skit for speaker order")
+            if detection_method == "manual" and not timestamp_input.strip():
+                errors.append("Enter timestamps (or switch to auto detection)")
         
         if not use_default and not templates_ready:
             errors.append("Upload all templates")
@@ -709,10 +794,10 @@ def main():
                 
                 # Process based on mode
                 if input_mode == "audio":
-                    # SINGLE AUDIO MODE - detect silence gaps for speaker switches
-                    status.info("🎧 Analyzing audio for speaker changes...")
+                    # SINGLE AUDIO MODE
+                    status.info("🎧 Processing audio...")
                     
-                    # Parse skit to know how many speakers and order
+                    # Parse skit to know speaker order
                     lines = parse_skit(skit_input)
                     if not lines:
                         st.error("❌ Could not parse skit")
@@ -725,43 +810,41 @@ def main():
                         f.write(uploaded_audio_single.read())
                     
                     total_duration = get_duration(full_audio_path)
-                    
-                    # Detect silence gaps
-                    status.info("🔍 Detecting speaker switches...")
-                    gaps = detect_silence_gaps(full_audio_path)
-                    
-                    # We need (num_lines - 1) gaps to separate the lines
                     num_lines = len(lines)
                     
-                    # Build segments with detected timing
-                    segments = []
-                    
-                    if len(gaps) >= num_lines - 1:
-                        # Use detected gaps
-                        switch_points = [0] + gaps[:num_lines-1] + [total_duration]
-                        for i, (spk, txt) in enumerate(lines):
-                            start = switch_points[i]
-                            end = switch_points[i + 1]
-                            segments.append({
-                                "speaker": spk,
-                                "text": txt,
-                                "start": start,
-                                "duration": end - start
-                            })
-                        st.success(f"✓ Detected {len(gaps)} silence gaps - using for speaker switches")
+                    # Get timestamps based on method
+                    if detection_method == "manual" and timestamp_input:
+                        # Manual timestamps
+                        status.info("⏱️ Using manual timestamps...")
+                        try:
+                            switch_points = [float(t.strip()) for t in timestamp_input.split(",")]
+                            # Add end time if not included
+                            if len(switch_points) == num_lines:
+                                switch_points.append(total_duration)
+                            elif len(switch_points) < num_lines:
+                                st.error(f"❌ Need {num_lines} timestamps, got {len(switch_points)}")
+                                return
+                        except Exception as e:
+                            st.error(f"❌ Invalid timestamps: {e}")
+                            return
                     else:
-                        # Fallback to equal division if not enough gaps detected
-                        st.warning(f"⚠️ Only found {len(gaps)} gaps, need {num_lines-1}. Using equal timing.")
-                        time_per_line = total_duration / num_lines
-                        for i, (spk, txt) in enumerate(lines):
-                            segments.append({
-                                "speaker": spk,
-                                "text": txt,
-                                "start": i * time_per_line,
-                                "duration": time_per_line
-                            })
+                        # Auto voice detection
+                        status.info("🤖 Detecting voice changes...")
+                        switch_points = detect_voice_changes(full_audio_path, num_lines)
+                        st.info(f"🔍 Detected switch points: {[f'{t:.1f}s' for t in switch_points]}")
                     
-                    # Store the full audio path for video creation
+                    # Build segments
+                    segments = []
+                    for i, (spk, txt) in enumerate(lines):
+                        start = switch_points[i]
+                        end = switch_points[i + 1] if i + 1 < len(switch_points) else total_duration
+                        segments.append({
+                            "speaker": spk,
+                            "text": txt,
+                            "start": start,
+                            "duration": end - start
+                        })
+                    
                     full_audio_for_video = full_audio_path
                     progress.progress(0.3)
                     

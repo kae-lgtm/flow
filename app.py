@@ -332,6 +332,26 @@ def download_template(url, output_path):
     except:
         return False
 
+def detect_silence_gaps(audio_path, min_silence_duration=0.3, silence_threshold="-35dB"):
+    """Detect silence gaps in audio to find speaker switch points."""
+    # Use FFmpeg's silencedetect filter
+    result = subprocess.run([
+        "ffmpeg", "-i", audio_path,
+        "-af", f"silencedetect=noise={silence_threshold}:d={min_silence_duration}",
+        "-f", "null", "-"
+    ], capture_output=True, text=True)
+    
+    # Parse the output for silence_end times (these mark speaker changes)
+    output = result.stderr
+    gaps = []
+    
+    # Find all silence_end timestamps
+    import re
+    for match in re.finditer(r'silence_end: ([\d.]+)', output):
+        gaps.append(float(match.group(1)))
+    
+    return gaps
+
 def create_video_single_audio(segments, audio_path, tmpl1, tmpl2, closing, output, progress_cb=None):
     """Create video from single complete audio file, switching speakers based on timing."""
     temp = Path(output).parent
@@ -689,10 +709,10 @@ def main():
                 
                 # Process based on mode
                 if input_mode == "audio":
-                    # SINGLE AUDIO MODE - split by timing based on skit
-                    status.info("🎧 Processing audio...")
+                    # SINGLE AUDIO MODE - detect silence gaps for speaker switches
+                    status.info("🎧 Analyzing audio for speaker changes...")
                     
-                    # Parse skit for timing
+                    # Parse skit to know how many speakers and order
                     lines = parse_skit(skit_input)
                     if not lines:
                         st.error("❌ Could not parse skit")
@@ -706,19 +726,40 @@ def main():
                     
                     total_duration = get_duration(full_audio_path)
                     
-                    # Estimate timing: divide audio equally among lines
-                    # (In reality, timing varies, but this is a simple approach)
-                    num_lines = len(lines)
-                    time_per_line = total_duration / num_lines
+                    # Detect silence gaps
+                    status.info("🔍 Detecting speaker switches...")
+                    gaps = detect_silence_gaps(full_audio_path)
                     
+                    # We need (num_lines - 1) gaps to separate the lines
+                    num_lines = len(lines)
+                    
+                    # Build segments with detected timing
                     segments = []
-                    for i, (spk, txt) in enumerate(lines):
-                        segments.append({
-                            "speaker": spk,
-                            "text": txt,
-                            "start": i * time_per_line,
-                            "duration": time_per_line
-                        })
+                    
+                    if len(gaps) >= num_lines - 1:
+                        # Use detected gaps
+                        switch_points = [0] + gaps[:num_lines-1] + [total_duration]
+                        for i, (spk, txt) in enumerate(lines):
+                            start = switch_points[i]
+                            end = switch_points[i + 1]
+                            segments.append({
+                                "speaker": spk,
+                                "text": txt,
+                                "start": start,
+                                "duration": end - start
+                            })
+                        st.success(f"✓ Detected {len(gaps)} silence gaps - using for speaker switches")
+                    else:
+                        # Fallback to equal division if not enough gaps detected
+                        st.warning(f"⚠️ Only found {len(gaps)} gaps, need {num_lines-1}. Using equal timing.")
+                        time_per_line = total_duration / num_lines
+                        for i, (spk, txt) in enumerate(lines):
+                            segments.append({
+                                "speaker": spk,
+                                "text": txt,
+                                "start": i * time_per_line,
+                                "duration": time_per_line
+                            })
                     
                     # Store the full audio path for video creation
                     full_audio_for_video = full_audio_path

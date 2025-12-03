@@ -165,8 +165,8 @@ VOICE_OPTIONS = {
     "Zephyr": "Zephyr"
 }
 
-# Models
-SKIT_MODEL = "gemini-2.5-flash"  # Fast and reliable
+# Models - using stable versions
+SKIT_MODEL = "gemini-2.0-flash"  # Stable and fast
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
 
 # ============================================================================
@@ -190,27 +190,50 @@ def check_ffmpeg():
 
 def parse_skit(text):
     """Parse skit into [(speaker, dialogue), ...]"""
+    if not text:
+        return []
+    
+    # Try standard quote format
     pattern = r'Speaker\s*(\d+)\s*:\s*["""]([^"""]+)["""]'
     matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
+    
     if not matches:
-        # Try alternate format
+        # Try alternate format without quotes
         pattern = r'Speaker\s*(\d+)\s*:\s*(.+?)(?=Speaker\s*\d+:|$)'
         matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
-        matches = [(num, line.strip().strip('"').strip('"').strip('"')) for num, line in matches]
+        matches = [(num, line.strip().strip('"').strip('"').strip('"').strip("'")) 
+                   for num, line in matches]
+    
     return [(f"Speaker {num}", line.strip()) for num, line in matches if line.strip()]
 
 def generate_skit(article, api_key):
     """Generate podcast skit from article using Gemini."""
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=SKIT_MODEL,
-        contents=SKIT_PROMPT + article,
-        config=types.GenerateContentConfig(
-            temperature=0.8,
-            max_output_tokens=600
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=SKIT_MODEL,
+            contents=SKIT_PROMPT + article,
+            config=types.GenerateContentConfig(
+                temperature=0.8,
+                max_output_tokens=600
+            )
         )
-    )
-    return response.text
+        
+        # Check if response has text
+        if response and response.text:
+            return response.text
+        elif response and response.candidates:
+            # Try to get text from candidates
+            for candidate in response.candidates:
+                if candidate.content and candidate.content.parts:
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            return part.text
+        
+        raise Exception("Gemini returned empty response. Try again.")
+        
+    except Exception as e:
+        raise Exception(f"Skit generation failed: {str(e)}")
 
 def generate_audio(text, voice, api_key, output_path):
     """Generate TTS audio using Gemini."""
@@ -382,7 +405,7 @@ def main():
         
         # API Key
         api_key = ""
-        if hasattr(st, 'secrets') and "GEMINI_API_KEY" in st.secrets:
+        if hasattr(st, 'secrets') and st.secrets and "GEMINI_API_KEY" in st.secrets:
             api_key = st.secrets["GEMINI_API_KEY"]
             st.markdown('<span class="badge-success">✅ API Key Ready</span>', unsafe_allow_html=True)
         else:
@@ -390,6 +413,8 @@ def main():
                                     help="Get free at aistudio.google.com")
             if api_key:
                 st.markdown('<span class="badge-success">✅ Key entered</span>', unsafe_allow_html=True)
+            else:
+                st.markdown('[Get free API key →](https://aistudio.google.com/app/apikey)')
         
         st.divider()
         

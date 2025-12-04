@@ -3,8 +3,7 @@ Pawdcast Skit Factory — Enhanced Modern Design
 Audio Mode: Perfect sync with Google TTS / any audio
 """
 import streamlit as st
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 import os
 import re
 import subprocess
@@ -408,47 +407,45 @@ def create_video_from_segments(segments, tmpl1, tmpl2, closing, output, progress
 # ============================================================================
 def generate_audio_gemini(text, voice, api_key, output_path):
     """Generate TTS audio using Gemini."""
-    client = genai.Client(api_key=api_key)
+    genai.configure(api_key=api_key)
     
-    response = client.models.generate_content(
-        model=TTS_MODEL,
-        contents=f'Say this naturally: "{text}"',
-        config=types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=voice
-                    )
-                )
-            )
+    model = genai.GenerativeModel(TTS_MODEL)
+    
+    response = model.generate_content(
+        f'Say this naturally: "{text}"',
+        generation_config=genai.types.GenerationConfig(
+            response_mime_type="audio/wav",
         )
     )
     
-    audio_part = response.candidates[0].content.parts[0]
-    audio_data = audio_part.inline_data.data
+    # Handle audio response
+    if hasattr(response, 'candidates') and response.candidates:
+        audio_part = response.candidates[0].content.parts[0]
+        if hasattr(audio_part, 'inline_data'):
+            audio_data = audio_part.inline_data.data
+            
+            if isinstance(audio_data, str):
+                missing_padding = len(audio_data) % 4
+                if missing_padding:
+                    audio_data += '=' * (4 - missing_padding)
+                audio_data = base64.b64decode(audio_data)
+            
+            # Write as WAV
+            with wave.open(output_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                wf.writeframes(audio_data)
+            
+            return output_path
     
-    if isinstance(audio_data, bytes):
-        pcm_data = audio_data
-    elif isinstance(audio_data, str):
-        missing_padding = len(audio_data) % 4
-        if missing_padding:
-            audio_data += '=' * (4 - missing_padding)
-        pcm_data = base64.b64decode(audio_data)
-    else:
-        raise Exception(f"Unexpected audio data type: {type(audio_data)}")
-    
-    with wave.open(output_path, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(24000)
-        wf.writeframes(pcm_data)
-    
-    return output_path
+    raise Exception("No audio generated")
 
 def generate_skit(article, api_key):
     """Generate podcast skit from article."""
-    client = genai.Client(api_key=api_key)
+    genai.configure(api_key=api_key)
+    
+    model = genai.GenerativeModel(SKIT_MODEL)
     
     prompt = f"""Transform this article into a short podcast conversation between two hosts.
 
@@ -463,7 +460,7 @@ Article:
 
 Write the skit:"""
     
-    response = client.models.generate_content(model=SKIT_MODEL, contents=prompt)
+    response = model.generate_content(prompt)
     return response.text
 
 # ============================================================================
